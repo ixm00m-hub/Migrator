@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Jira Cloud → DC Migrator</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; background: #f4f7fb; }
+    .container { max-width: 980px; margin: 28px auto; background: white; padding: 24px; border-radius: 10px; box-shadow: 0 6px 18px rgba(0,0,0,0.08); }
+    h1 { margin-top: 0; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    label { font-size: 12px; color: #444; display: block; margin-bottom: 4px; }
+    input { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 6px; }
+    .section { margin-top: 18px; }
+    button { padding: 10px 14px; border: none; border-radius: 6px; background: #0052cc; color: white; cursor: pointer; }
+    button.secondary { background: #2e3a59; }
+    .projects { max-height: 220px; overflow: auto; border: 1px solid #ddd; border-radius: 8px; padding: 8px; }
+    .project-item { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; overflow: auto; }
+    .row { display: flex; gap: 8px; align-items: center; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Jira Cloud → Data Center Migrator</h1>
+    <p>Enter source/target info, discover projects, choose what to migrate, then run.</p>
+
+    <div class="grid">
+      <div>
+        <h3>Cloud</h3>
+        <label>Cloud Base URL</label><input id="cloud_base_url" placeholder="https://org.atlassian.net" />
+        <label>Cloud User</label><input id="cloud_user" placeholder="admin@example.com" />
+        <label>Cloud Token</label><input id="cloud_token" type="password" placeholder="token" />
+      </div>
+      <div>
+        <h3>Data Center</h3>
+        <label>DC Base URL</label><input id="dc_base_url" placeholder="https://jira-dc.example.com" />
+        <label>DC User</label><input id="dc_user" placeholder="jira-admin" />
+        <label>DC Token/Password</label><input id="dc_token" type="password" placeholder="token" />
+      </div>
+    </div>
+
+    <div class="section row">
+      <button onclick="discoverProjects()">Discover Cloud Projects</button>
+      <button class="secondary" onclick="selectAll(true)">Select All</button>
+      <button class="secondary" onclick="selectAll(false)">Clear</button>
+    </div>
+
+    <div class="section">
+      <h3>Projects to migrate</h3>
+      <div class="projects" id="projects"></div>
+    </div>
+
+    <div class="section grid">
+      <div>
+        <label>Target project key prefix</label><input id="target_project_prefix" value="MIG" />
+      </div>
+      <div>
+        <label>Target project name prefix</label><input id="target_project_name_prefix" value="Migrated" />
+      </div>
+      <div>
+        <label>Max issues per project</label><input id="max_issues_per_project" value="500" />
+      </div>
+      <div>
+        <label>Issue batch size</label><input id="issue_batch_size" value="100" />
+      </div>
+    </div>
+
+    <div class="section row">
+      <label><input type="checkbox" id="dry_run" checked /> Dry run</label>
+      <label><input type="checkbox" id="migrate_comments" checked /> Migrate comments</label>
+      <label><input type="checkbox" id="include_done" checked /> Include Done issues</label>
+    </div>
+
+    <div class="section">
+      <button onclick="runMigration()">Run Migration</button>
+    </div>
+
+    <div class="section">
+      <h3>Result</h3>
+      <pre id="result">No run yet.</pre>
+    </div>
+  </div>
+
+  <script>
+    let discovered = [];
+
+    function val(id) { return document.getElementById(id).value; }
+
+    async function discoverProjects() {
+      const payload = {
+        cloud_base_url: val('cloud_base_url'),
+        cloud_user: val('cloud_user'),
+        cloud_token: val('cloud_token')
+      };
+      const resultNode = document.getElementById('result');
+      resultNode.textContent = 'Discovering projects...';
+      const resp = await fetch('/api/projects/discover', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      if (!resp.ok) {
+        resultNode.textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      discovered = data.projects || [];
+      const container = document.getElementById('projects');
+      container.innerHTML = '';
+      for (const p of discovered) {
+        const row = document.createElement('div');
+        row.className = 'project-item';
+        row.innerHTML = `<input type="checkbox" value="${p.key}" checked /><span><b>${p.key}</b> - ${p.name} <small>(${p.project_type_key}/${p.style})</small></span>`;
+        container.appendChild(row);
+      }
+      resultNode.textContent = `Discovered ${discovered.length} projects.`;
+    }
+
+    function selectAll(enabled) {
+      for (const cb of document.querySelectorAll('#projects input[type="checkbox"]')) {
+        cb.checked = enabled;
+      }
+    }
+
+    async function runMigration() {
+      const selected = [...document.querySelectorAll('#projects input[type="checkbox"]:checked')].map(x => x.value);
+      const payload = {
+        cloud_base_url: val('cloud_base_url'),
+        cloud_user: val('cloud_user'),
+        cloud_token: val('cloud_token'),
+        dc_base_url: val('dc_base_url'),
+        dc_user: val('dc_user'),
+        dc_token: val('dc_token'),
+        source_project_keys: selected,
+        target_project_prefix: val('target_project_prefix'),
+        target_project_name_prefix: val('target_project_name_prefix'),
+        dry_run: document.getElementById('dry_run').checked,
+        max_issues_per_project: parseInt(val('max_issues_per_project') || '500', 10),
+        migrate_comments: document.getElementById('migrate_comments').checked,
+        include_done: document.getElementById('include_done').checked,
+        issue_batch_size: parseInt(val('issue_batch_size') || '100', 10),
+        db_path: './.migrator/mappings.sqlite3'
+      };
+      const resultNode = document.getElementById('result');
+      resultNode.textContent = 'Running migration...';
+      const resp = await fetch('/api/migrate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      });
+      const data = await resp.json();
+      resultNode.textContent = JSON.stringify(data, null, 2);
+    }
+  </script>
+</body>
+</html>
