@@ -1,0 +1,9 @@
+services:
+  jira-migrator:
+    build: .
+    container_name: jira-migrator
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./.migrator:/app/.migrator
+    restart: unless-stopped
